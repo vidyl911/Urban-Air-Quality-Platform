@@ -1,0 +1,87 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+airflow-venv/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Raw and processed data
+data/raw/*
+data/bronze/*
+data/silver/*
+data/gold/*
+
+# Keep data directories
+!data/raw/.gitkeep
+!data/bronze/.gitkeep
+!data/silver/.gitkeep
+!data/gold/.gitkeep
+
+# Large data files
+*.csv
+*.parquet
+*.json
+*.geojson
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.zip
+*.gz
+*.tar
+
+# Machine learning artifacts
+models/
+checkpoints/
+artifacts/
+*.pt
+*.pth
+*.onnx
+*.joblib
+*.pkl
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Airflow
+airflow/logs/
+airflow/airflow.cfg
+airflow/webserver_config.py
+
+# Spark / Hadoop
+spark-warehouse/
+metastore_db/
+derby.log/
+*.crc
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker/volumes/
+docker/data/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

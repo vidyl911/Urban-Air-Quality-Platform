@@ -1,0 +1,48 @@
+# Core
+numpy
+pandas
+pyarrow
+requests
+python-dotenv
+pydantic
+pyyaml
+
+# Scientific / ML
+scipy
+scikit-learn
+torch
+torchvision
+torchaudio
+
+# Geospatial
+geopandas
+shapely
+pyproj
+rtree
+
+# Database / PostGIS
+SQLAlchemy
+psycopg2-binary
+GeoAlchemy2
+
+# Distributed Processing
+pyspark
+
+# Streaming
+kafka-python-ng
+
+# MLOps
+mlflow
+
+# AWS
+boto3
+s3fs
+
+# Visualization / Notebooks
+matplotlib
+seaborn
+jupyter
+ipykernel
+
+# Utilities
+loguru
