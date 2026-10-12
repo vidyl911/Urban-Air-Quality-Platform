@@ -85,20 +85,7 @@ def process_measurements() -> pd.DataFrame:
 def process_stations() -> pd.DataFrame:
     """Read and standardize monitoring-station metadata."""
 
-    # The source has malformed quoting and extra commas in
-    # the Location field. Read each record as a semicolon-
-    # delimited row, then retain the first eight fields.
-    df = pd.read_csv(
-        STATIONS_FILE,
-        sep=";",
-        encoding="utf-8-sig",
-        engine="python",
-        usecols=range(8),
-        dtype="string",
-        on_bad_lines="warn",
-    )
-
-    df.columns = [
+    station_columns = [
         "station_id",
         "station_name",
         "arpa_station_id",
@@ -109,39 +96,64 @@ def process_stations() -> pd.DataFrame:
         "latitude",
     ]
 
+    # The source contains malformed CSV quoting.
+    # Split on semicolons without interpreting quotation marks.
+    rows = []
+
+    with STATIONS_FILE.open("r", encoding="utf-8-sig") as file:
+        for line_number, line in enumerate(file.readlines()[1:], start=2):
+            line = line.strip()
+
+            if not line:
+                continue
+
+            fields = line.split(";")
+
+            if len(fields) < 8:
+                print(f"Skipping malformed row {line_number}")
+                continue
+
+            # Keep the eight metadata fields; ignore Location columns.
+            fields = fields[:8]
+
+            fields = [
+                value.strip().strip('"').strip()
+                for value in fields
+            ]
+
+            rows.append(fields)
+
+    df = pd.DataFrame(rows, columns=station_columns)
+
     for column in [
         "station_id",
         "station_name",
         "arpa_station_id",
         "pollutants_reported",
     ]:
-        df[column] = df[column].str.strip().str.strip('"')
+        df[column] = df[column].astype("string").str.strip()
 
-    df["operational_start"] = pd.to_datetime(
-        df["operational_start"],
-        errors="coerce",
-    )
-    df["operational_end"] = pd.to_datetime(
-        df["operational_end"],
-        errors="coerce",
-    )
-    df["longitude"] = pd.to_numeric(
-        df["longitude"],
-        errors="coerce",
-    )
-    df["latitude"] = pd.to_numeric(
-        df["latitude"],
-        errors="coerce",
-    )
+    for column in ["operational_start", "operational_end"]:
+        df[column] = pd.to_datetime(
+            df[column],
+            errors="coerce",
+        )
+
+    for column in ["longitude", "latitude"]:
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
 
     print("\nStation inspection")
     print(f"Rows: {len(df):,}")
     print(f"Invalid station IDs: {df['station_id'].isna().sum():,}")
     print(f"Invalid longitudes: {df['longitude'].isna().sum():,}")
     print(f"Invalid latitudes: {df['latitude'].isna().sum():,}")
+    print("\nSample stations:")
+    print(df.head().to_string(index=False))
 
     return df
-
 
 # --------------------------------------------------
 # Main
