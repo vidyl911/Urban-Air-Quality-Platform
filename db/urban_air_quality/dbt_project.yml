@@ -1,0 +1,31 @@
+
+# Project configuration
+name: 'urban_air_quality'
+version: '1.0.0'
+config-version: 2
+
+profile: 'urban_air_quality'
+
+# Project directories
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+# Directories removed by `dbt clean`
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Model configurations
+models:
+  urban_air_quality:
+    staging:
+      +materialized: view
+      +schema: staging
+
+    marts:
+      +materialized: table
+      +schema: analytics
