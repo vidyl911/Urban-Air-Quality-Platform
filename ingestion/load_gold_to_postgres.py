@@ -1,17 +1,22 @@
-"""Load Gold air-quality and weather Parquet datasets into PostgreSQL."""
+"""Load Gold Parquet datasets into PostgreSQL without breaking dbt views."""
 
+import os
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.dataset as ds
 import psycopg2
 from psycopg2 import sql
-import pyarrow as pa
 
 ROOT = Path(__file__).resolve().parents[1]
 
 DATASETS = {
     "gold_air_quality": ROOT / "data/gold/air_quality/daily_features",
     "gold_weather": ROOT / "data/gold/weather/daily_features",
+    "station_landcover": (
+        ROOT / "data/gold/spatial_context/station_landcover"
+        / "station_landcover.parquet"
+    ),
 }
 
 DB_CONFIG = {
@@ -19,16 +24,34 @@ DB_CONFIG = {
     "port": 5432,
     "dbname": "urban_air_quality",
     "user": "postgres",
-    # Set this environment variable in PowerShell before running.
-    "password": None,
 }
 
 SCHEMA = "raw_gold"
 BATCH_SIZE = 1000
 
 
+def get_postgres_type(arrow_type, column_name: str) -> str:
+    """Map supported PyArrow types to PostgreSQL types."""
+    if pa.types.is_integer(arrow_type):
+        return "BIGINT"
+    if pa.types.is_floating(arrow_type):
+        return "DOUBLE PRECISION"
+    if pa.types.is_boolean(arrow_type):
+        return "BOOLEAN"
+    if pa.types.is_timestamp(arrow_type):
+        return "TIMESTAMP"
+    if pa.types.is_date(arrow_type):
+        return "DATE"
+    if pa.types.is_string(arrow_type) or pa.types.is_large_string(arrow_type):
+        return "TEXT"
+
+    raise TypeError(
+        f"Unsupported Arrow type for column {column_name}: {arrow_type}"
+    )
+
+
 def load_dataset(cursor, table_name: str, path: Path) -> None:
-    """Replace a PostgreSQL table with a Parquet dataset."""
+    """Create a table if needed, then refresh its rows transactionally."""
     if not path.exists():
         raise FileNotFoundError(f"Dataset not found: {path}")
 
@@ -36,62 +59,83 @@ def load_dataset(cursor, table_name: str, path: Path) -> None:
     arrow_schema = dataset.schema
     columns = arrow_schema.names
 
-    # Initial implementation supports the numeric, string, date and boolean
-    # columns expected in these Gold datasets.
-    pg_types = []
+    if not columns:
+        raise ValueError(f"No columns found in dataset: {path}")
 
-    for field in arrow_schema:
-        arrow_type = field.type
-
-        if pa.types.is_integer(arrow_type):
-            pg_type = "BIGINT"
-        elif pa.types.is_floating(arrow_type):
-            pg_type = "DOUBLE PRECISION"
-        elif pa.types.is_boolean(arrow_type):
-            pg_type = "BOOLEAN"
-        elif pa.types.is_timestamp(arrow_type):
-            pg_type = "TIMESTAMP"
-        elif pa.types.is_date(arrow_type):
-            pg_type = "DATE"
-        elif (
-            pa.types.is_string(arrow_type)
-            or pa.types.is_large_string(arrow_type)
-        ):
-            pg_type = "TEXT"
-        else:
-            raise TypeError(
-                f"Unsupported Arrow type for column "
-                f"{field.name}: {arrow_type}"
-            )
-
-        pg_types.append((field.name, pg_type))
-
-    cursor.execute(
-        sql.SQL("DROP TABLE IF EXISTS {}.{}").format(
-            sql.Identifier(SCHEMA), sql.Identifier(table_name)
-        )
-    )
-
-    definitions = [
-        sql.SQL("{} {}").format(sql.Identifier(name), sql.SQL(pg_type))
-        for name, pg_type in pg_types
+    pg_types = [
+        (field.name, get_postgres_type(field.type, field.name))
+        for field in arrow_schema
     ]
-    cursor.execute(
-        sql.SQL("CREATE TABLE {}.{} ({})").format(
-            sql.Identifier(SCHEMA),
-            sql.Identifier(table_name),
-            sql.SQL(", ").join(definitions),
-        )
-    )
 
-    insert_query = sql.SQL("INSERT INTO {}.{} ({}) VALUES ({})").format(
-        sql.Identifier(SCHEMA),
-        sql.Identifier(table_name),
+    table = sql.Identifier(SCHEMA, table_name)
+
+    # Check whether the target table already exists.
+    cursor.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = %s
+              AND table_name = %s
+        )
+        """,
+        (SCHEMA, table_name),
+    )
+    table_exists = cursor.fetchone()[0]
+
+    if table_exists:
+        # Keep the existing table object so dependent dbt views remain valid.
+        cursor.execute(
+            sql.SQL("TRUNCATE TABLE {}").format(table)
+        )
+
+        # Fail clearly if the existing schema differs from the Parquet schema.
+        cursor.execute(
+            """
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (SCHEMA, table_name),
+        )
+        existing_columns = cursor.fetchall()
+
+        expected_columns = [name for name, _ in pg_types]
+        actual_columns = [name for name, _ in existing_columns]
+
+        if actual_columns != expected_columns:
+            raise ValueError(
+                f"Schema mismatch for {SCHEMA}.{table_name}. "
+                f"PostgreSQL columns: {actual_columns}; "
+                f"Parquet columns: {expected_columns}. "
+                "No table was dropped. Resolve the schema difference "
+                "before reloading."
+            )
+    else:
+        definitions = [
+            sql.SQL("{} {}").format(
+                sql.Identifier(name), sql.SQL(pg_type)
+            )
+            for name, pg_type in pg_types
+        ]
+        cursor.execute(
+            sql.SQL("CREATE TABLE {} ({})").format(
+                table,
+                sql.SQL(", ").join(definitions),
+            )
+        )
+
+    insert_query = sql.SQL(
+        "INSERT INTO {} ({}) VALUES ({})"
+    ).format(
+        table,
         sql.SQL(", ").join(map(sql.Identifier, columns)),
         sql.SQL(", ").join(sql.Placeholder() for _ in columns),
     )
 
     total = 0
+
     for batch in dataset.to_batches(batch_size=BATCH_SIZE):
         rows = batch.to_pylist()
         cursor.executemany(
@@ -107,8 +151,6 @@ def load_dataset(cursor, table_name: str, path: Path) -> None:
 
 
 def main() -> None:
-    import os
-
     password = os.environ.get("URBAN_AQ_DB_PASSWORD")
     if not password:
         raise RuntimeError(
@@ -117,6 +159,8 @@ def main() -> None:
 
     DB_CONFIG["password"] = password
 
+    # The connection context commits all three loads together.
+    # If any load fails, the transaction rolls back.
     with psycopg2.connect(**DB_CONFIG) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -124,6 +168,7 @@ def main() -> None:
                     sql.Identifier(SCHEMA)
                 )
             )
+
             for table_name, path in DATASETS.items():
                 load_dataset(cursor, table_name, path)
 
